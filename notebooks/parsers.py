@@ -1,31 +1,22 @@
-# -*- coding: utf-8 -*-
-"""
-Created on Sat Jan 24 17:04:30 2015
-
-@author: Alexey Strokach
-"""
-#%%
-
-from __future__ import print_function
-
 import os
-import gzip
-import urllib
-import xml.etree.ElementTree as ET
+import os.path as op
+import logging
+import atexit
+import tempfile
 
 import pandas as pd
 
-from elaspic.structure_tools import AAA_DICT
-from elaspic.conf import get_temp_dir
-
-from common import blast_tools
+from common import blast_tools, pdb_tools
 
 
-#%% Functions used by ``make_ddg_training_set_core``
-###################################################################################################
+# %%
+logger = logging.getLogger(__name__)
 
-#blastp_libraries_path = '/home/kimlab1/strokach/databases/pdbfam/DB_Libraries_nr/'
+
+# %% Functions used by ``make_ddg_training_set_core``
+
 blast_db_path = '/home/kimlab1/strokach/databases/pdbfam/libraries_all_together_db/libraries_all'
+
 
 def mutation_in_sequence(mutation, sequence):
     if mutation is None or sequence is None:
@@ -33,7 +24,7 @@ def mutation_in_sequence(mutation, sequence):
     try:
         mutation_aa = mutation[0]
         mutation_pos = int(mutation[1:-1])
-        sequence_aa = sequence[mutation_pos-1]
+        sequence_aa = sequence[mutation_pos - 1]
     except Exception as e:
         print(str(e))
         print(mutation, sequence)
@@ -82,33 +73,34 @@ def mutation_inside_domain(x):
     domain_counter = set()
     for x in domain_def.split(','):
         start_pos, end_pos = [int(i) for i in x.split(':')]
-        domain_counter.update(range(start_pos, end_pos+1))
+        domain_counter.update(range(start_pos, end_pos + 1))
 
     return any([mutation in domain_counter for mutation in mutations])
 
 
-
 blast_cache = dict()
+
+
 def run_blast(uniprot_id, uniprot_sequence, domain_def):
     blast_cache_key = (uniprot_id.split('_')[0], domain_def)
     if blast_cache_key in blast_cache:
         return blast_cache[blast_cache_key]
     domain_start, domain_end = [int(x) for x in domain_def.split(':')]
-    domain_sequence = uniprot_sequence[domain_start-1:domain_end]
+    domain_sequence = uniprot_sequence[domain_start - 1:domain_end]
     result_df, system_command = blast_tools.call_blast(domain_sequence, blast_db_path)
     blast_tools.annotate_blast_results(result_df, domain_start, len(domain_sequence))
     blast_cache[blast_cache_key] = (result_df, system_command)
     return result_df, system_command
 
 
-
 def remove_domains_outside_mutation(result_df, mutation):
     result_df = (
-        result_df[result_df['domain_def_new']
-        .apply(lambda x: mutation_inside_domain([mutation, x]))].copy()
+        result_df[
+            result_df['domain_def_new']
+            .apply(lambda x: mutation_inside_domain([mutation, x]))
+        ].copy()
     )
     return result_df
-
 
 
 stratify_by_pc_identity = [
@@ -117,6 +109,7 @@ stratify_by_pc_identity = [
     (60, lambda x: (x >= 40) & (x < 60)),
     (40, lambda x: x < 40),
 ]
+
 
 def stratify_results_by_identity(result_df):
     templates = []
@@ -129,7 +122,6 @@ def stratify_results_by_identity(result_df):
         templates.append(row)
     templates_df = pd.concat(templates, ignore_index=True)
     return templates_df
-
 
 
 def get_templates(x):
@@ -148,8 +140,6 @@ def get_templates(x):
     -------
     pandas.DataFrame
         Dataframe that includes only those domains that contain a mutation
-
-
     """
     unique_id, uniprot_id, uniprot_mutation, domain_def, uniprot_sequence = x
 
@@ -179,11 +169,10 @@ def get_templates(x):
 def mutate_sequence(x):
     us, um = x
     um_pos = int(um[1:-1])
-    if us[um_pos-1] == um[0]:
-        return us[:um_pos-1] + um[-1] + us[um_pos:]
+    if us[um_pos - 1] == um[0]:
+        return us[:um_pos - 1] + um[-1] + us[um_pos:]
     else:
         raise Exception(us, um)
-
 
 
 def get_seq_identity_df(uniprot_domain_df, domain_pair=False, reverse_mut=False):
@@ -193,13 +182,13 @@ def get_seq_identity_df(uniprot_domain_df, domain_pair=False, reverse_mut=False)
     """
     if not domain_pair:
         idx_column = 'uniprot_domain_id'
-        duplicate_subset = []
+#        duplicate_subset = []
     else:
         idx_column = 'uniprot_domain_pair_id'
-        duplicate_subset = [
-            'uniprot_domain_id_1', 'uniprot_domain_id_2', 'uniprot_id_1', 'uniprot_id_2',
-            'uniprot_mutation'
-        ]
+#        duplicate_subset = [
+#            'uniprot_domain_id_1', 'uniprot_domain_id_2', 'uniprot_id_1', 'uniprot_id_2',
+#            'uniprot_mutation'
+#        ]
 
     seq_identity_40 = uniprot_domain_df[[idx_column]].copy()
     seq_identity_40['max_seq_identity'] = 40
@@ -216,165 +205,7 @@ def get_seq_identity_df(uniprot_domain_df, domain_pair=False, reverse_mut=False)
     return seq_identity
 
 
-
-
-
-###############################################################################
-### Functions
-
-pdb_to_uniprot_cache = {}
-
-def get_uniprot_from_pdb___deprecated(pdb_id, pdb_resnum, pdb_aa, uniprot_id, cache_dir=None):
-    """ This function is deprecated. Use get_sifts_data instead.
-    """
-    if cache_dir is None:
-        cache_dir = get_temp_dir() + 'sifts/'
-
-    if not os.path.isdir(cache_dir):
-        os.mkdir(cache_dir)
-
-    sifts_filename = pdb_id.lower() + '.xml.gz'
-    if not os.path.isfile(cache_dir + sifts_filename):
-        request = urllib.Request('ftp://ftp.ebi.ac.uk/pub/databases/msd/sifts/xml/{}.xml.gz'.format(pdb_id.lower()))
-        response = urllib.urlopen(request)
-        with open(cache_dir + sifts_filename, 'wb') as ofh:
-            ofh.write(response.read())
-
-    # buf = StringIO(response.read())
-    # ifh = gzip.GzipFile(fileobj=buf)
-    with gzip.open(cache_dir + sifts_filename) as ifh:
-        root = ET.fromstring(ifh.read())
-    uniprot_position = None
-    uniprot_aa = None
-    pdb_chain = None
-    for entity in root:
-        if entity.tag.split('}')[-1] == 'entity':
-            pdb_chain = entity.attrib.get('entityId')
-            for segment in entity:
-                if segment.tag.split('}')[-1] == 'segment' \
-                and int(segment.attrib.get('start')) <= pdb_resnum \
-                and int(segment.attrib.get('end')) >= pdb_resnum:
-                    for listResidue in segment:
-                        if listResidue.tag.split('}')[-1] == 'listResidue':
-                            for residue in listResidue:
-                                if residue.tag.split('}')[-1] == 'residue' \
-                                and int(residue.attrib.get('dbResNum')) == pdb_resnum:
-                                    for crossRefDb in residue:
-                                        if crossRefDb.tag.split('}')[-1] == 'crossRefDb' \
-                                        and crossRefDb.attrib.get('dbSource') == 'UniProt':
-                                            if pdb_aa and pdb_aa != crossRefDb.attrib.get('dbResName'):
-                                                continue
-                                            if not uniprot_id:
-                                                uniprot_id = crossRefDb.attrib.get('dbAccessionId') == uniprot_id
-                                            uniprot_position = crossRefDb.attrib.get('dbResNum')
-                                            uniprot_aa = crossRefDb.attrib.get('dbResName')
-                                            break
-    return uniprot_position, uniprot_aa, pdb_chain
-
-
-
-def get_sifts_data(pdb_id, cache_dict={}, cache_dir=None):
-    """Download the xml file for the pdb file with the pdb id pdb_id, parse that
-    xml file, and return a dictionry which maps pdb resnumbing to uniprot
-    numbering for the chain specified by pdb_chain and uniprot specified by
-    uniprot_id.
-    """
-    if pdb_id in cache_dict:
-        return cache_dict[pdb_id]
-
-    # Set up a directory to store sifts xml files
-    if cache_dir is None:
-        cache_dir = get_temp_dir() + 'sifts/'
-    if not os.path.isdir(cache_dir):
-        os.mkdir(cache_dir)
-
-    # Download the sifts file if it is not in cache
-    sifts_filename = pdb_id.lower() + '.xml.gz'
-    if not os.path.isfile(cache_dir + sifts_filename):
-        request = urllib.Request('ftp://ftp.ebi.ac.uk/pub/databases/msd/sifts/xml/' + sifts_filename)
-        response = urllib.urlopen(request)
-        with open(cache_dir + sifts_filename, 'wb') as ofh:
-            ofh.write(response.read())
-        # buf = StringIO(response.read())
-        # ifh = gzip.GzipFile(fileobj=buf)
-        # root = ET.fromstring(ifh.read())
-
-    # Go over the xml file and find all cross-references to uniprot
-    pdb_sifts_data = []
-    with gzip.open(cache_dir + sifts_filename) as ifh:
-        root = ET.fromstring(ifh.read())
-    for entity in root:
-        # Go over different entries in SIFTS
-        if entity.tag.split('}')[-1] == 'entity':
-                # Go over different chain segments
-                for segment in entity:
-                    if segment.tag.split('}')[-1] == 'segment':
-                        # Go over different lists of residues
-                        for listResidue in segment:
-                            if listResidue.tag.split('}')[-1] == 'listResidue':
-                                # Go over each residue
-                                for residue in listResidue:
-                                    if residue.tag.split('}')[-1] == 'residue':
-                                        # Go over all database crossreferences keeping only those
-                                        # that come from uniprot and match the given uniprot_id
-                                        residue_data = _fill_residue_data(pdb_id, residue)
-                                        if residue_data is None:
-                                            continue
-                                        pdb_sifts_data.append(residue_data)
-
-    # Convert data to a DataFrame and make sure we have no duplicates
-    pdb_sifts_data_df = pd.DataFrame(pdb_sifts_data)
-    assert len(pdb_sifts_data_df) == len(pdb_sifts_data_df.drop_duplicates(subset=['pdb_chain', 'resnum']))
-
-    # TODO: should optimise the code above instead of simply removing duplicates
-    # pdb_sifts_data_df = pdb_sifts_data_df.drop_duplicates()
-
-    cache_dict[pdb_id] = pdb_sifts_data_df
-    return pdb_sifts_data_df
-
-
-
-def _fill_residue_data(pdb_id, residue_xml):
-#    residue_field_names = [
-#        'pdb_id', 'pdb_chain', 'resnum', 'pdb_aa',
-#        'uniprot_id', 'uniprot_position', 'uniprot_aa', 'pfam_id']
-#    residue_data = {x: None for x in residue_field_names}
-    residue_data = {'is_observed': True, 'comments': []}
-
-    for crossRefDb in residue_xml:
-        # Some more details about the residue
-        if crossRefDb.tag.split('}')[-1] == 'residueDetail':
-            residue_data['comments'].append(crossRefDb.text)
-            if crossRefDb.text == 'Not_Observed':
-                residue_data['is_observed'] = False
-        # Mappings to other databases
-        if crossRefDb.tag.split('}')[-1] == 'crossRefDb':
-            if (crossRefDb.attrib.get('dbSource') == 'PDB'):
-                    residue_data['pdb_id'] = crossRefDb.attrib.get('dbAccessionId')
-                    residue_data['pdb_chain'] = crossRefDb.attrib.get('dbChainId')
-                    residue_data['resnum'] = crossRefDb.attrib.get('dbResNum')
-                    resname = crossRefDb.attrib.get('dbResName')
-                    if resname in AAA_DICT:
-                        residue_data['pdb_aa'] = AAA_DICT[resname]
-                    else:
-                        print('Could not convert amino acid {} to a one letter code!')
-                        residue_data['pdb_aa'] = resname
-            if (crossRefDb.attrib.get('dbSource') == 'UniProt'):
-                    residue_data['uniprot_id'] = crossRefDb.attrib.get('dbAccessionId')
-                    residue_data['uniprot_position'] = crossRefDb.attrib.get('dbResNum')
-                    residue_data['uniprot_aa'] = crossRefDb.attrib.get('dbResName')
-            if (crossRefDb.attrib.get('dbSource') == 'Pfam'):
-                    residue_data['pfam_id'] = crossRefDb.attrib.get('dbAccessionId')
-
-    residue_data['comments'] = ','.join(residue_data['comments'])
-
-    return residue_data
-
-
-
-###################################################################################################
-#%% Parse protherm ddg training set data
-###################################################################################################
+# %% Parse protherm ddg training set data
 
 class ParseProtherm():
     """
@@ -389,23 +220,130 @@ class ParseProtherm():
     ] + thermodynamic_parameters
 
     uniprot_name_conversion = {
-        'MK10_HUMAN': 'BRCA1_HUMAN', # BRCA1
+        'MK10_HUMAN': 'BRCA1_HUMAN',  # BRCA1
     }
 
     uniprot_id_conversion = {
         'P69542': 'P69543',
-        'P53779': 'P38398', # BRCA1
+        'P53779': 'P38398',  # BRCA1
     }
 
     pdb_id_conversion = {
-        'rf5v': '3f5v'
+        'érf5v': '3f5v',
+        '1bgl': '4v40',
     }
 
     def __init__(self):
         self.data = []
         self.sifts_cache = {}
-        self.DEBUG = False
+        self.sifts_cache_dir = (
+            tempfile.TemporaryDirectory(dir=op.join(tempfile.gettempdir(), 'sifts'))
+        )
+        atexit.register(self.sifts_cache_dir.cleanup)
 
+    def _parse(self, line, row_data, file_data, line_number):
+        """
+        Parameters
+        ----------
+        line : str
+            ...
+        row_data : list
+            ...
+        file_data : list
+            Processed contents of the Protherm file
+        line_number : int
+            Line number that we are currently analysing
+            (we need to look ahead sometimes...)
+        """
+        row = line.split()
+
+        if row[0] == 'NO.':
+            row_data['protherm_no'] = int(row[-1])
+
+        elif row[0] == 'PROTEIN':
+            row_data['protein_name'] = ' '.join(row[1:])
+
+        elif row[0] == 'SWISSPROT_ID':
+            if len(row) > 1:
+                uniprot_name = row[1]
+                row_data['uniprot_name'] = (
+                    self.uniprot_name_conversion.get(uniprot_name, uniprot_name)
+                )
+            if len(row) > 2:
+                uniprot_id = row[2].strip('()')
+                row_data['uniprot_id'] = (
+                    self.uniprot_id_conversion.get(uniprot_id, uniprot_id)
+                )
+
+        elif row[0] == 'PDB_wild' and len(row) > 1:
+            pdb_id = row[-1].lower()
+            row_data['pdb_id'] = self.pdb_id_conversion.get(pdb_id, pdb_id)
+
+        elif row[0] == 'MUTATION' and len(row) == 2 and row[1] == 'wild':
+            row_data['mutation'] = 'wild'
+
+        elif row[0] == 'MUTATION' and len(row) > 1:
+            row_data['mutation'] = ''.join(row[1:])
+
+            # Skip strange rows
+            if len(row) != 4:
+                raise Exception("Keeping only single mutation variants.")
+            if all(row_data[x] is None for x in ['uniprot_id', 'pdb_id', 'protein_name']):
+                raise Exception(
+                    "Skipping mutation with no protein_name, no uniprot_id and no pdb_id.")
+            if len(row[-3]) > 1 or len(row[-1]) > 1:
+                raise Exception("Only considering single amino acid substitutions.")
+
+            # Convert mutation to uniprot coordinates if mutation is with respect to pdb
+            if all(row_data[key] is not None for key in ['pdb_id', 'mutation']):
+                self.__get_mutation_uniprot(row_data)
+
+        elif row[0] == 'REMARKS' and len(row) > 1:
+            row_data['remarks'] = ' '.join(row[1:])
+            # Sometimes remarks stretch out over multiple lines
+            i = 1
+            next_line = file_data[line_number + i]
+            while next_line[0] == ' ':
+                row_data['remarks'] += '; ' + next_line.strip()
+                i += 1
+                next_line = file_data[line_number + i]
+
+        elif (row[0] in self.thermodynamic_parameters and len(row) > 1 and line[0] != ' '):
+            # Skip bad values
+            value = ''.join(row[1:])
+            if any(v in value for v in ['<', '>', 'Unknown', 'n.d.', 'NO_MOLECULE', 'dimer']):
+                raise Exception(
+                    'Cannot convert entry "{}" to float because it contains '
+                    'a blacklisted character'.format(value)
+                )
+            # Clean value
+            value = value.replace(',', '').replace('/K', '').lower()
+            # Convert to float
+            conversion = {
+                '': 1,
+                'kcal/mol': 1,
+                'kcal/mole': 1,
+                'cal/mol': 0.001,
+                'cal/mole': 0.001,
+                'kal/mol': 0.001,
+                'kal/mole': 0.001,
+                'kj/mol': 0.239001,
+                'kj/mole': 0.239001,
+            }
+            value = value
+            for suffix, cf in conversion.items():
+                try:
+                    row_data[row[0]] = cf * float(value.strip(suffix))
+                    break
+                except ValueError:
+                    pass
+            # Report errors
+            if row_data[row[0]] is None:
+                error_message = (
+                    "Could not convert key {} value {} to float! Skipping..."
+                    .format(row[0], value)
+                )
+                logger.warning(error_message)
 
     def parse(self, filename):
         with open(filename, 'r') as fh:
@@ -414,119 +352,50 @@ class ParseProtherm():
         row_data = self.__get_empty_row_data()
         for line_number, line in enumerate(file_data):
 
-            row = line.split()
             try:
-
-                if row[0] == 'NO.':
-                    row_data['protherm_no'] = int(row[-1])
-
-                if row[0] == 'PROTEIN':
-                    row_data['protein_name'] = ' '.join(row[1:])
-
-                if row[0] == 'SWISSPROT_ID':
-                    if len(row) > 1:
-                        uniprot_name = row[1]
-                        row_data['uniprot_name'] = self.uniprot_name_conversion.get(uniprot_name, uniprot_name)
-                    if len(row) > 2:
-                        uniprot_id = row[2].strip('()')
-                        row_data['uniprot_id'] = self.uniprot_id_conversion.get(uniprot_id, uniprot_id)
-
-                if row[0] == 'PDB_wild' and len(row) > 1:
-                    pdb_id = row[-1].lower().strip('\x82')
-                    row_data['pdb_id'] = self.pdb_id_conversion.get(pdb_id, pdb_id)
-
-                if row[0] == 'MUTATION' and len(row) == 2 and row[1] == 'wild':
-                    row_data['mutation'] = 'wild'
-
-                if row[0] == 'MUTATION' and len(row) > 1:
-                    row_data['mutation'] = ''.join(row[1:])
-
-                    # Skip strange rows
-                    if len(row) != 4:
-                        raise Exception("Keeping only single mutation variants")
-                    if all(row_data[x] is None for x in ['uniprot_id', 'pdb_id', 'protein_name']):
-                        raise Exception("Skipping mutation with no protein_name, no uniprot_id and no pdb_id")
-                    if len(row[-3]) > 1 or len(row[-1]) > 1:
-                        raise Exception("Only considering single amino acid substitutions")
-
-                    # Convert mutation to uniprot coordinates if mutation is with respect to the pdb
-                    if all(row_data[key] is not None for key in ['pdb_id', 'mutation']):
-                        self.__get_mutation_uniprot(row_data)
-
-                if row[0] == 'REMARKS' and len(row) > 1:
-                    row_data['remarks'] = ' '.join(row[1:])
-                    # Sometimes remarks stretch out over multiple lines
-                    i = 1
-                    next_line = file_data[line_number+i]
-                    while next_line[0] == ' ':
-                        row_data['remarks'] += '; ' + next_line.strip()
-                        i += 1
-                        next_line = file_data[line_number+i]
-
-                if row[0] in self.thermodynamic_parameters and len(row) > 1 and line[0] != ' ':
-                    value = ''.join(row[1:]).replace(',', '')
-                    if any(x in value for x in {'<', '>', 'Unknown', 'n.d.', 'NO_MOLECULE'}):
-                        raise Exception("Cannot convert entry '{}' to float!".format(value))
-
-                    try:
-                        if 'kcal/mol' in value:
-                            row_data[row[0]] = float(value.strip('kcal/mol'))
-                        elif 'kJ/mol' in value:
-                            row_data[row[0]] = 0.239001 * float(value.strip('kJ/mol'))
-                        elif 'cal/mol' in value:
-                            row_data[row[0]] = 0.001 * float(value.strip('cal/mol'))
-                        elif 'kal/mol' in value:
-                            row_data[row[0]] = 0.001 * float(value.strip('kal/mol'))
-                        elif 'K' in value:
-                             row_data[row[0]] = float(value.strip('K'))
-                        else:
-                            row_data[row[0]] = float(value)
-                    except ValueError as e:
-                        print(e)
-                        print('Could not convert key {} value {} to float! Skipping...'.format(row[0], value))
-
-
+                self._parse(line, row_data, file_data, line_number)
             except Exception as e:
-                error_message = 'Line: {}. Key: {}. Error: {}'.format(line_number, row[0], str(e))
-                print("error_message: {}".format(error_message))
-                print("row_data: {}".format(row_data))
-                print()
-                row_data['errors'].append(error_message)
+                error_info = (
+                    'Error type: "{}", Error Message: "{}", Line: "{}"'
+                    .format(type(e), str(e), '{}: {}'.format(line_number, line.strip()))
+                )
+                error_message = error_info + ', row_data: "{}"\n\n'.format(row_data)
+                if not str(e).startswith('Keeping only single mutation'):
+                    logger.error(error_message)
+                row_data['errors'].append(error_info)
 
-            if row[0] == '//':
+            if line.startswith('//'):
                 row_data = self.__flush_row_data(row_data)
-
 
     def __get_empty_row_data(self):
         row_data = {name: None for name in self.column_names}
         row_data['errors'] = []
         return row_data
 
-
     def __flush_row_data(self, row_data):
         row_data['errors'] = ';'.join(row_data['errors'])
         self.data.append(row_data)
         return self.__get_empty_row_data()
 
-
     def __get_mutation_uniprot(self, row_data):
 
-        try:
-            # Get sifts data
-            if row_data['pdb_id'] not in self.sifts_cache:
-                sifts_df = get_sifts_data(row_data['pdb_id'])
-                self.sifts_cache[row_data['pdb_id']] = sifts_df
-            else:
-                sifts_df = self.sifts_cache[row_data['pdb_id']]
-        except Exception:
-            raise Exception('Could not get SIFTS data!')
+        # try:
+        # Get sifts data
+        if row_data['pdb_id'] not in self.sifts_cache:
+            sifts_df = pdb_tools.get_sifts_data(row_data['pdb_id'], self.sifts_cache_dir.name)
+            self.sifts_cache[row_data['pdb_id']] = sifts_df
+        else:
+            sifts_df = self.sifts_cache[row_data['pdb_id']]
+        # except Exception:
+        #     raise Exception('Could not get SIFTS data!')
 
         # Sometimes sifts does not contain any uniprot information for the protein in question
         subset_columns = ['uniprot_position', 'uniprot_aa', 'pdb_chain']
-        if len(set(subset_columns) - set(sifts_df.columns)):
-            raise Exception(
-                "SIFTS information missing for some of the required columns: {}"
-                .format(set(subset_columns) - set(sifts_df.columns)))
+        missing_columns = sorted(set(subset_columns) - set(sifts_df.columns))
+        if missing_columns == ['uniprot_aa', 'uniprot_position']:
+            raise Exception('SIFTS has no UniProt annotation for this protein')
+        elif missing_columns:
+            raise Exception("SIFTS information missing: {}".format(missing_columns))
         sifts_df = sifts_df.dropna(subset=subset_columns)
 
         # residx counts the index of the residue in the pdb, starting from 1
@@ -545,7 +414,8 @@ class ParseProtherm():
             # Try using residx instead of resnum
             sifts_df_subset_2 = sifts_df[
                 (sifts_df['pdb_id'] == row_data['pdb_id']) &
-                (sifts_df['residx'] == int(''.join(c for c in row_data['mutation'][1:-1] if c.isdigit()))) &
+                (sifts_df['residx'] == int(
+                    ''.join(c for c in row_data['mutation'][1:-1] if c.isdigit()))) &
                 (sifts_df['pdb_aa'] == row_data['mutation'][0]) &
                 (sifts_df['uniprot_id'] == row_data['uniprot_id'])]
         else:
@@ -559,7 +429,8 @@ class ParseProtherm():
         # Or residx and wildcard uniprot
         sifts_df_subset_3 = sifts_df[
             (sifts_df['pdb_id'] == row_data['pdb_id']) &
-            (sifts_df['residx'] == int(''.join(c for c in row_data['mutation'][1:-1] if c.isdigit()))) &
+            (sifts_df['residx'] == int(
+                ''.join(c for c in row_data['mutation'][1:-1] if c.isdigit()))) &
             (sifts_df['pdb_aa'] == row_data['mutation'][0])]
         # Choose the best availible subset
         if len(sifts_df_subset_0):
@@ -571,7 +442,7 @@ class ParseProtherm():
         elif len(sifts_df_subset_3):
             sifts_df_subset = sifts_df_subset_3
         else:
-            raise Exception("No rows in the sifts df match the inclusion criteria!")
+            raise Exception("SIFTS failed to match residue")
 
         # Save the calculated values
         row_data['pdb_aa'] = sifts_df_subset['pdb_aa'].iloc[0]
@@ -584,10 +455,7 @@ class ParseProtherm():
             row_data['uniprot_id'] = sifts_df_subset['uniprot_id'].iloc[0]
 
 
-
-#%%
+# %%
 if __name__ == '__main__':
     import doctest
     doctest.testmod()
-
-

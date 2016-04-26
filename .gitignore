@@ -1,3 +1,7 @@
-notebooks/*/*
-!notebooks/downloads/*
+# Hidden files and folders
+_*
+.*
 
+# Data files
+downloads/*
+notebooks/*/*
