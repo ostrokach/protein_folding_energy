@@ -6,9 +6,11 @@ _*
 notebooks/*/*
 
 # Keep downloads
-!notebooks/downloads/*.gz
-!notebooks/downloads/*.zip
+downloads/*
+!downloads/*.gz
+!downloads/*.zip
 
 # Keep output
-!notebooks/output/*.gz
+output/*
+!output/*.gz
 
