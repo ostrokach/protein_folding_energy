@@ -206,13 +206,16 @@ SIFTS failed to match residue ({}, {}, {}, {})\
     uniprot_id = sifts_df_subset.iloc[0].get('uniprot_id', uniprot_id)
     uniprot_aa = sifts_df_subset.iloc[0]['uniprot_aa']
     uniprot_pos = int(sifts_df_subset.iloc[0]['uniprot_position'])
+    pdb_chain = sifts_df_subset.iloc[0]['pdb_chain']
 
     uniprot_seqrecord = get_uniprot_sequence(uniprot_id)
     if str(uniprot_seqrecord.seq)[uniprot_pos - 1] != uniprot_aa:
         uniprot_aa = '?'
         uniprot_pos = np.nan
 
-    return dict(uniprot_id=uniprot_id, uniprot_aa=uniprot_aa, uniprot_pos=uniprot_pos)
+    return dict(
+        uniprot_id=uniprot_id, uniprot_aa=uniprot_aa, uniprot_pos=uniprot_pos, pdb_chain=pdb_chain
+    )
 
 
 def convert_pdb_mutations_to_uniprot(pdb_id, pdb_chains, pdb_mutations, uniprot_id, sifts_df):
@@ -254,12 +257,13 @@ def convert_pdb_mutations_to_uniprot(pdb_id, pdb_chains, pdb_mutations, uniprot_
                     pdb_id, pdb_chain, pdb_wt_aa, pdb_resnum, uniprot_id, sifts_df,
                     pdb_resnum_offset=i))
         uniprot_id = uniprot_aa_data[0]['uniprot_id']
+        pdb_chains = ','.join(x['pdb_chain'] for x in uniprot_aa_data)
         uniprot_wt = ''.join(x['uniprot_aa'] for x in uniprot_aa_data)
         uniprot_pos = uniprot_aa_data[0]['uniprot_pos']
         uniprot_mutation = '{}{}{}'.format(uniprot_wt, uniprot_pos, pdb_mut)
         uniprot_mutations.append(uniprot_mutation)
 
-    return uniprot_id, ','.join(uniprot_mutations)
+    return uniprot_id, ','.join(uniprot_mutations), pdb_chains
 
 
 def get_sifts_data(pdb_id, pdb_mutations):
@@ -333,9 +337,9 @@ def get_uniprot_id_mutation(pdb_id, pdb_chains, pdb_mutations, uniprot_id):
     except lxml.etree.XMLSyntaxError:
         return _uniprot_fallback(uniprot_id, pdb_mutations)
 
-    uniprot_id, uniprot_mutations = convert_pdb_mutations_to_uniprot(
+    uniprot_id, uniprot_mutations, pdb_chains = convert_pdb_mutations_to_uniprot(
         pdb_id, pdb_chains, pdb_mutations, uniprot_id, sifts_df)
-    return uniprot_id, uniprot_mutations, pdb_mutations
+    return uniprot_id, uniprot_mutations, pdb_chains, pdb_mutations
 
 
 def get_uniprot_id_mutation_protherm(x):
@@ -343,12 +347,12 @@ def get_uniprot_id_mutation_protherm(x):
     pdb_id, pdb_mutations, uniprot_id = x
     if pd.isnull(pdb_id) and pd.isnull(pdb_mutations):
         print('Not enough info: {}'.format(dict(x.items())))
-        return np.nan, np.nan, pdb_mutations
+        return np.nan, np.nan, np.nan, pdb_mutations
     try:
         return get_uniprot_id_mutation(pdb_id, None, pdb_mutations, uniprot_id)
     except pdb_tools.SIFTSError as e:
         print('{}: {}'.format(e, dict(x.items())))
-        return np.nan, np.nan, pdb_mutations
+        return np.nan, np.nan, np.nan, pdb_mutations
 
 
 def get_uniprot_id_mutation_rosetta_ddg(x):
@@ -356,9 +360,9 @@ def get_uniprot_id_mutation_rosetta_ddg(x):
     pdb_id, pdb_chains, pdb_mutations = x
     if pd.isnull(pdb_id) and pd.isnull(pdb_mutations):
         print('Not enough info: {}'.format(dict(x.items())))
-        return np.nan, np.nan, pdb_mutations
+        return np.nan, np.nan, pdb_chains, pdb_mutations
     try:
         return get_uniprot_id_mutation(pdb_id, pdb_chains, pdb_mutations, None)
     except pdb_tools.SIFTSError as e:
         print('{}: {}'.format(e, dict(x.items())))
-        return np.nan, np.nan, pdb_mutations
+        return np.nan, np.nan, pdb_chains, pdb_mutations

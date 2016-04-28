@@ -2,6 +2,13 @@
 _*
 .*
 
-# Data files
-downloads/*
+# Temporary files
 notebooks/*/*
+
+# Keep downloads
+!notebooks/downloads/*.gz
+!notebooks/downloads/*.zip
+
+# Keep output
+!notebooks/output/*.gz
+
