@@ -6,7 +6,7 @@ import tempfile
 
 import pandas as pd
 
-from common import blast_tools, pdb_tools
+from ascommon import blast_tools, pdb_tools
 
 
 # %%
@@ -15,7 +15,6 @@ logger = logging.getLogger(__name__)
 
 # %% Functions used by ``make_ddg_training_set_core``
 
-blast_db_path = '/home/kimlab1/strokach/databases/pdbfam/libraries_all_together_db/libraries_all'
 
 
 def mutation_in_sequence(mutation, sequence):
@@ -77,22 +76,6 @@ def mutation_inside_domain(x):
 
     return any([mutation in domain_counter for mutation in mutations])
 
-
-blast_cache = dict()
-
-
-def run_blast(uniprot_id, uniprot_sequence, domain_def):
-    blast_cache_key = (uniprot_id.split('_')[0], domain_def)
-    if blast_cache_key in blast_cache:
-        return blast_cache[blast_cache_key]
-    domain_start, domain_end = [int(x) for x in domain_def.split(':')]
-    domain_sequence = uniprot_sequence[domain_start - 1:domain_end]
-    result_df, system_command = blast_tools.call_blast(domain_sequence, blast_db_path)
-    blast_tools.annotate_blast_results(result_df, domain_start, len(domain_sequence))
-    blast_cache[blast_cache_key] = (result_df, system_command)
-    return result_df, system_command
-
-
 def remove_domains_outside_mutation(result_df, mutation):
     result_df = (
         result_df[
@@ -102,70 +85,6 @@ def remove_domains_outside_mutation(result_df, mutation):
     )
     return result_df
 
-
-stratify_by_pc_identity = [
-    (100, lambda x: x >= 80),
-    (80, lambda x: (x >= 60) & (x < 80)),
-    (60, lambda x: (x >= 40) & (x < 60)),
-    (40, lambda x: x < 40),
-]
-
-
-def stratify_results_by_identity(result_df):
-    templates = []
-    for prefix, fun in stratify_by_pc_identity:
-        rows = result_df[result_df['pc_identity'].apply(fun) == True]
-        if not len(rows):
-            continue
-        row = rows[:1].copy()
-        row['max_seq_identity'] = prefix
-        templates.append(row)
-    templates_df = pd.concat(templates, ignore_index=True)
-    return templates_df
-
-
-def get_templates(x):
-    """Find a list of templates for a given domain spanning different sequnece indentity bins
-
-    Parameters
-    ----------
-    x : list
-        [unique_id, uniprot_id, uniprot_mutation, domain_def, uniprot_sequence]
-    y : int
-        hello world
-    x : str
-        good bye world
-
-    Returns
-    -------
-    pandas.DataFrame
-        Dataframe that includes only those domains that contain a mutation
-    """
-    unique_id, uniprot_id, uniprot_mutation, domain_def, uniprot_sequence = x
-
-    try:
-        result_df, system_command = run_blast(uniprot_id, uniprot_sequence, domain_def)
-        if result_df is None or len(result_df) == 0:
-            raise Exception('No templates were found in the PDB database!')
-        result_df['unique_id'] = unique_id
-
-        blast_results_mutdom = remove_domains_outside_mutation(result_df, uniprot_mutation)
-        if blast_results_mutdom is None or len(blast_results_mutdom) == 0:
-            raise Exception('Templates that were found do not cover the site of the mutation!')
-
-    except Exception as e:
-        print(
-            'An error occured!\n',
-            e, '\n',
-            uniprot_id, ' ', domain_def, ' ', uniprot_mutation, '\n',
-            # uniprot_sequence, '\n',
-            sep='',
-        )
-        return None
-
-    return blast_results_mutdom
-
-
 def mutate_sequence(x):
     us, um = x
     um_pos = int(um[1:-1])
@@ -173,37 +92,6 @@ def mutate_sequence(x):
         return us[:um_pos - 1] + um[-1] + us[um_pos:]
     else:
         raise Exception(us, um)
-
-
-def get_seq_identity_df(uniprot_domain_df, domain_pair=False, reverse_mut=False):
-    """
-    .. note::
-        I think this function is obsolete and not used anymore...
-    """
-    if not domain_pair:
-        idx_column = 'uniprot_domain_id'
-#        duplicate_subset = []
-    else:
-        idx_column = 'uniprot_domain_pair_id'
-#        duplicate_subset = [
-#            'uniprot_domain_id_1', 'uniprot_domain_id_2', 'uniprot_id_1', 'uniprot_id_2',
-#            'uniprot_mutation'
-#        ]
-
-    seq_identity_40 = uniprot_domain_df[[idx_column]].copy()
-    seq_identity_40['max_seq_identity'] = 40
-    seq_identity_60 = uniprot_domain_df[[idx_column]].copy()
-    seq_identity_60['max_seq_identity'] = 60
-    seq_identity_80 = uniprot_domain_df[[idx_column]].copy()
-    seq_identity_80['max_seq_identity'] = 80
-    seq_identity_100 = uniprot_domain_df[[idx_column]].copy()
-    seq_identity_100['max_seq_identity'] = 100
-    seq_identity = pd.concat(
-        [seq_identity_40, seq_identity_60, seq_identity_80, seq_identity_100],
-        ignore_index=True)
-
-    return seq_identity
-
 
 # %% Parse protherm ddg training set data
 

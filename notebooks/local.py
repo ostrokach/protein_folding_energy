@@ -1,12 +1,11 @@
 import re
 import numpy as np
 import pandas as pd
-from ascommon.pdb_tools import sifts
+from kmtools.pdb_tools import sifts
 
 
 # #################################################################################################
 # Parse ΔΔG datasets
-
 
 def fix_mutations(
         mutations,
@@ -42,27 +41,38 @@ def fix_mutations(
     return ','.join(fixed_mutations)
 
 
-def get_uniprot_id_mutation_protherm(x):
+def get_uniprot_id_mutation_protherm(pdb_id, pdb_chains, pdb_mutations, uniprot_id):
     """Wrapper around `sifts.get_uniprot_id_mutation` for Protherm."""
-    pdb_id, pdb_mutations, uniprot_id = x
+    pdb_mutations = pdb_mutations.replace(' ', '')
     if pd.isnull(pdb_id) and pd.isnull(pdb_mutations):
-        print('Not enough info: {}'.format(dict(x.items())))
-        return np.nan, np.nan, np.nan, pdb_mutations
+        print('Not enough info: ({}, {}, {})'.format(pdb_id, pdb_mutations, uniprot_id))
+        return np.nan, np.nan, np.nan, np.nan
     try:
-        return sifts.get_uniprot_id_mutation(pdb_id, None, pdb_mutations, uniprot_id)
+        result = sifts.get_uniprot_id_mutation(pdb_id, pdb_chains, pdb_mutations, uniprot_id)
+        return (
+            result.get('uniprot_id_sifts', np.nan),
+            result.get('uniprot_mutations_sifts', np.nan),
+            result.get('pfam_id_sifts', np.nan),
+            result.get('pdb_mutations_sifts', np.nan),
+        )
     except sifts.SIFTSError as e:
-        print('{}: {}'.format(e, dict(x.items())))
-        return np.nan, np.nan, np.nan, pdb_mutations
+        print(e)
+        return np.nan, np.nan, np.nan, np.nan
 
 
-def get_uniprot_id_mutation_rosetta_ddg(x):
+def get_uniprot_id_mutation_rosetta_ddg(pdb_id, pdb_chains, pdb_mutations):
     """Wrapper around `sifts.get_uniprot_id_mutation` for Rosetta ddG."""
-    pdb_id, pdb_chains, pdb_mutations = x
     if pd.isnull(pdb_id) and pd.isnull(pdb_mutations):
-        print('Not enough info: {}'.format(dict(x.items())))
-        return np.nan, np.nan, pdb_chains, pdb_mutations
+        print('Not enough info: ({}, {}, {})'.format(pdb_id, pdb_chains, pdb_mutations))
+        return np.nan, np.nan, np.nan, np.nan
     try:
-        return sifts.get_uniprot_id_mutation(pdb_id, pdb_chains, pdb_mutations, None)
+        result = sifts.get_uniprot_id_mutation(pdb_id, pdb_chains, pdb_mutations, None)
+        return (
+            result.get('uniprot_id_sifts', np.nan),
+            result.get('uniprot_mutations_sifts', np.nan),
+            result.get('pfam_id_sifts', np.nan),
+            result.get('pdb_mutations_sifts', np.nan),
+        )
     except sifts.SIFTSError as e:
-        print('{}: {}'.format(e, dict(x.items())))
-        return np.nan, np.nan, pdb_chains, pdb_mutations
+        print(e)
+        return np.nan, np.nan, np.nan, np.nan
